@@ -1,16 +1,80 @@
-from fetcher.fetcher import HuggingFaceModelFetcher
+import argparse
 import json
+import os
+from datetime import datetime
+from fetcher.fetcher import HuggingFaceModelFetcher
 
-if __name__ == "__main__":
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+def load_config():
+    config_path = "config/config.json"
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_models(models):
+    os.makedirs("data", exist_ok=True)
+    with open("data/models.json", "w", encoding="utf-8") as f:
+        json.dump(models, f, ensure_ascii=False, indent=4, cls=DateTimeEncoder)
+
+def add_subscription(args, config):
+    for sub in config["subscriptions"]:
+        if sub["name"] == args.name or sub["url"] == args.url:
+            print("Subscription name or URL already exists.")
+            return
+    config["subscriptions"].append({"name": args.name, "url": args.url, "type": "html"})
+    with open("config/config.json", "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
+    print("Subscription added successfully.")
+
+def remove_subscription(args, config):
+    config["subscriptions"] = [sub for sub in config["subscriptions"] if sub["name"] != args.name]
+    with open("config/config.json", "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
+    print("Subscription removed successfully.")
+
+def list_subscriptions(config):
+    for sub in config["subscriptions"]:
+        print(f"Name: {sub['name']}, URL: {sub['url']}")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--add-subscription", action="store_true", help="Add a new subscription")
+    parser.add_argument("--remove-subscription", action="store_true", help="Remove an existing subscription")
+    parser.add_argument("--list-subscriptions", action="store_true", help="List all subscriptions")
+    parser.add_argument("--name", type=str, help="Subscription name")
+    parser.add_argument("--url", type=str, help="Subscription URL")
+    args = parser.parse_args()
+
+    config = load_config()
+    
+    if args.add_subscription:
+        if args.name and args.url:
+            add_subscription(args, config)
+        else:
+            print("Both --name and --url are required to add a subscription.")
+        return
+
+    if args.remove_subscription:
+        if args.name:
+            remove_subscription(args, config)
+        else:
+            print("--name is required to remove a subscription.")
+        return
+    
+    if args.list_subscriptions:
+        list_subscriptions(config)
+        return
+
     fetcher = HuggingFaceModelFetcher()
     models = fetcher.fetch()
+    save_models(models)
+    print("Fetched models have been saved successfully.")
 
-    # 按时间排序
-    models.sort(key=lambda x: x["time"], reverse=True)
-
-    # 打印已抓取的模型信息
-    for model in models:
-        print(f"Title: {model['title']}")
-        print(f"Link: {model['link']}")
-        print(f"Time: {model['time']}")
-        print("-" * 50)
+if __name__ == "__main__":
+    main()

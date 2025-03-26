@@ -4,12 +4,14 @@ from datetime import datetime
 import json
 import os
 import logging
+from time import sleep  # 修改导入语句
 
 class HuggingFaceModelFetcher:
     def __init__(self, config_path="config/config.json"):
         self.logger = self.setup_logger()
         self.config = self.load_config(config_path)
         self.url = self.get_subscription_url("Hugging Face Models - Deepseek")
+        self.session = requests.Session()  # 使用会话以保持连接
 
     def setup_logger(self):
         """设置日志记录"""
@@ -40,11 +42,50 @@ class HuggingFaceModelFetcher:
         self.logger.error(f"Subscription '{name}' not found in config.")
         raise ValueError(f"Subscription '{name}' not found in config.")
 
+    def fetch_model_details(self, model_url):
+        """获取模型详细信息"""
+        try:
+            response = self.session.get(model_url, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            
+            details = {}
+            
+            # 获取模型描述
+            description_elem = soup.find("div", class_="prose")
+            if description_elem:
+                details["description"] = description_elem.get_text(strip=True)
+            
+            # 获取模型标签
+            tags_elem = soup.find("div", class_="flex flex-wrap gap-2")
+            if tags_elem:
+                details["tags"] = [tag.get_text(strip=True) for tag in tags_elem.find_all("span")]
+            
+            # 获取模型大小
+            size_elem = soup.find("div", string=lambda text: text and "Size" in text)
+            if size_elem:
+                details["size"] = size_elem.get_text(strip=True)
+            
+            # 获取许可证信息
+            license_elem = soup.find("div", string=lambda text: text and "License" in text)
+            if license_elem:
+                details["license"] = license_elem.get_text(strip=True)
+            
+            # 获取下载次数
+            downloads_elem = soup.find("div", string=lambda text: text and "Downloads" in text)
+            if downloads_elem:
+                details["downloads"] = downloads_elem.get_text(strip=True)
+            
+            return details
+        except Exception as e:
+            self.logger.error(f"Error fetching details for {model_url}: {e}")
+            return {}
+
     def fetch(self):
         """抓取 Hugging Face Deepseek 模型的最新发布信息"""
         self.logger.info(f"Fetching data from {self.url}")
         try:
-            response = requests.get(self.url, timeout=10)
+            response = self.session.get(self.url, timeout=10)
             response.raise_for_status()
         except requests.RequestException as e:
             self.logger.error(f"Error fetching Hugging Face Models: {e}")
@@ -74,11 +115,20 @@ class HuggingFaceModelFetcher:
                     self.logger.info(f"No time found for model '{title}', setting default time as now.")
                     time_obj = datetime.now()  # 如果没有时间，则使用当前时间
 
-            models.append({
-                "title": title,
-                "link": link,
-                "time": time_obj,
-            })
+                # 获取模型详细信息
+                self.logger.info(f"Fetching details for model: {title}")
+                details = self.fetch_model_details(link)
+                
+                # 添加延迟以避免请求过快
+                sleep(1)  # 使用导入的 sleep 函数
+
+                model_data = {
+                    "title": title,
+                    "link": link,
+                    "time": time_obj,
+                    "details": details
+                }
+                models.append(model_data)
 
         self.logger.info(f"Fetched {len(models)} models.")
         return models
