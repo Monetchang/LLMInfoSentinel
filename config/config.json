@@ -1,14 +1,13 @@
 {
-    "subscriptions": [
+  "subscriptions": [
       {
-        "name": "Hugging Face Blog",
-        "url": "https://huggingface.co/blog",
-        "type": "html"
+          "name": "Hugging Face Models - Deepseek",
+          "url": "https://huggingface.co/deepseek-ai",
+          "type": "html"
       }
-    ],
-    "notifications": {
+  ],
+  "notifications": {
       "method": "email",
       "email": "your-email@example.com"
-    }
   }
-  
+}
