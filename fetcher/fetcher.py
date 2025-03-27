@@ -42,6 +42,45 @@ class HuggingFaceModelFetcher:
         self.logger.error(f"Subscription '{name}' not found in config.")
         raise ValueError(f"Subscription '{name}' not found in config.")
 
+    def fetch_model_stats(self, url):
+        """获取模型统计信息"""
+        try:
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            
+            stats = {}
+            
+            # 获取点赞数
+            likes_button = soup.find("button", {"title": "See users who liked this repository"})
+            self.logger.info(f"likes_button ---->  {likes_button}")
+            if likes_button:
+                likes_text = likes_button.get_text(strip=True)
+                self.logger.info(f"Found likes text: {likes_text}")
+                # 转换数字格式（如 "3.72k" 转换为 3720）
+                if 'k' in likes_text.lower():
+                    stats["likes"] = float(likes_text.lower().replace('k', '')) * 1000
+                else:
+                    stats["likes"] = float(likes_text)
+            
+            # 获取关注者数
+            followers_button = soup.find("button", {"title": "Show DeepSeek's followers"})
+            self.logger.info(f"followers_button ---->  {followers_button}")
+            if followers_button:
+                followers_text = followers_button.get_text(strip=True)
+                self.logger.info(f"Found followers text: {followers_text}")
+                # 转换数字格式（如 "50.6k" 转换为 50600）
+                if 'k' in followers_text.lower():
+                    stats["followers"] = float(followers_text.lower().replace('k', '')) * 1000
+                else:
+                    stats["followers"] = float(followers_text)
+            
+            self.logger.info(f"Final model stats: {stats}")
+            return stats
+        except Exception as e:
+            self.logger.error(f"Error fetching repo stats for {url}: {e}")
+            return {}
+
     def fetch_model_details(self, model_url):
         """获取模型详细信息"""
         try:
@@ -51,30 +90,34 @@ class HuggingFaceModelFetcher:
             
             details = {}
             
-            # 获取模型描述
-            description_elem = soup.find("div", class_="prose")
-            if description_elem:
-                details["description"] = description_elem.get_text(strip=True)
+            # 获取 Introduction 部分
+            intro_section = soup.find("h2", class_="relative group flex items-center")
+            self.logger.info(f"Introduction section found: {intro_section}")
             
-            # 获取模型标签
-            tags_elem = soup.find("div", class_="flex flex-wrap gap-2")
-            if tags_elem:
-                details["tags"] = [tag.get_text(strip=True) for tag in tags_elem.find_all("span")]
+            if intro_section and "Introduction" in intro_section.get_text():
+                intro_content = []
+                current = intro_section.find_next_sibling()
+                while current and not (current.name == "h2" and "Model Summary" in current.get_text()):
+                    if current.name == "p":
+                        text = current.get_text(strip=True)
+                        if text:  # 只添加非空文本
+                            intro_content.append(text)
+                    current = current.find_next_sibling()
+                
+                if intro_content:
+                    details["introduction"] = "\n".join(intro_content)
+                    self.logger.info(f"Introduction content: {details['introduction']}")
+                else:
+                    self.logger.info("No introduction content found in paragraphs")
+                    details["introduction"] = "Not found..."
+            else:
+                self.logger.info("Introduction section not found")
+                details["introduction"] = "Not found..."
             
-            # 获取模型大小
-            size_elem = soup.find("div", string=lambda text: text and "Size" in text)
-            if size_elem:
-                details["size"] = size_elem.get_text(strip=True)
+            # 添加日志输出以便调试
+            self.logger.info(f"Fetched details for {model_url}:")
             
-            # 获取许可证信息
-            license_elem = soup.find("div", string=lambda text: text and "License" in text)
-            if license_elem:
-                details["license"] = license_elem.get_text(strip=True)
             
-            # 获取下载次数
-            downloads_elem = soup.find("div", string=lambda text: text and "Downloads" in text)
-            if downloads_elem:
-                details["downloads"] = downloads_elem.get_text(strip=True)
             
             return details
         except Exception as e:
@@ -89,12 +132,16 @@ class HuggingFaceModelFetcher:
             response.raise_for_status()
         except requests.RequestException as e:
             self.logger.error(f"Error fetching Hugging Face Models: {e}")
-            return []
+            return {"models": [], "model_stats": {}}  # 返回正确的数据结构
 
         soup = BeautifulSoup(response.text, "html.parser")
         models = []
 
         model_list = soup.find(id="models")
+        if not model_list:
+            self.logger.error("No model list found on the page")
+            return {"models": [], "model_stats": {}}  # 返回模型统计信息
+
         for model_card in model_list.find_all("article", class_="overview-card-wrapper"):
             title_element = model_card.find("h4", class_="text-md")
             time_element = model_card.find("time")
@@ -119,17 +166,27 @@ class HuggingFaceModelFetcher:
                 self.logger.info(f"Fetching details for model: {title}")
                 details = self.fetch_model_details(link)
                 
+                # 获取仓库统计信息（点赞数和关注者数）
+                self.logger.info(f"Fetching model stats for model: {title}")
+                model_stats = self.fetch_model_stats(link)
+                
                 # 添加延迟以避免请求过快
-                sleep(1)  # 使用导入的 sleep 函数
+                sleep(1)
 
                 model_data = {
                     "title": title,
                     "link": link,
                     "time": time_obj,
-                    "details": details
+                    "details": details,
+                    "model_stats": model_stats
                 }
                 models.append(model_data)
 
+        # 返回模型列表
+        result = {
+            "models": models
+        }
+
         self.logger.info(f"Fetched {len(models)} models.")
-        return models
+        return result
         

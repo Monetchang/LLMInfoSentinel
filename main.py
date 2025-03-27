@@ -17,10 +17,10 @@ def load_config():
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_models(models):
+def save_models(data):
     os.makedirs("data", exist_ok=True)
     with open("data/models.json", "w", encoding="utf-8") as f:
-        json.dump(models, f, ensure_ascii=False, indent=4, cls=DateTimeEncoder)
+        json.dump(data, f, ensure_ascii=False, indent=4, cls=DateTimeEncoder)
 
 def add_subscription(args, config):
     for sub in config["subscriptions"]:
@@ -72,9 +72,31 @@ def main():
         return
 
     fetcher = HuggingFaceModelFetcher()
-    models = fetcher.fetch()
-    save_models(models)
+    data = fetcher.fetch()
+    save_models(data)
     print("Fetched models have been saved successfully.")
+    print(f"Total models: {len(data['models'])}")
+    print("\nModel stats for each model:")
+    for model in data['models']:
+        print(f"\n{model['title']}:")
+        print(f"  Likes: {model['model_stats'].get('likes', 'N/A')}")
+        print(f"  Followers: {model['model_stats'].get('followers', 'N/A')}")
+        if 'details' in model:
+            details = model['details']
+            if 'introduction' in details:
+                print("\n  Introduction:")
+                print(f"    {details['introduction'][:200]}...")  # 只显示前200个字符
+            if 'model_summary' in details:
+                print("\n  Model Summary:")
+                print(f"    {details['model_summary'][:200]}...")  # 只显示前200个字符
+            if 'tags' in details:
+                print("\n  Tags:", ", ".join(details['tags']))
+            if 'size' in details:
+                print("\n  Size:", details['size'])
+            if 'license' in details:
+                print("\n  License:", details['license'])
+            if 'downloads' in details:
+                print("\n  Downloads:", details['downloads'])
 
 if __name__ == "__main__":
     main()
