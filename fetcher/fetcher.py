@@ -14,10 +14,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 class HuggingFaceModelFetcher:
-    def __init__(self, config_path="config/config.json"):
+    def __init__(self, config):
         self.logger = self.setup_logger()
-        self.config = self.load_config(config_path)
-        self.url = self.config["subscriptions"][0]["url"]
+        if isinstance(config, str):
+            self.config = self.load_config(config)
+        else:
+            self.config = config
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
@@ -30,6 +32,8 @@ class HuggingFaceModelFetcher:
         options.add_argument('--disable-dev-shm-usage')
         self.driver = webdriver.Chrome(options=options)
         self.wait = WebDriverWait(self.driver, 10)
+        # 加载本地模型数据
+        self.existing_models = self.load_existing_models()
 
     def setup_logger(self):
         """设置日志记录"""
@@ -60,18 +64,23 @@ class HuggingFaceModelFetcher:
         self.logger.error(f"Subscription '{name}' not found in config.")
         raise ValueError(f"Subscription '{name}' not found in config.")
 
-    def fetch_model_stats(self, url):
-        """获取模型统计信息"""
+    def fetch_model_info(self, model_url, fetch_introduction=False):
+        """获取模型的所有信息（包括统计信息和详细信息）
+        Args:
+            model_url: 模型页面的URL
+            fetch_introduction: 是否获取Introduction部分，默认为False
+        """
         try:
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(model_url, timeout=10)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             
-            stats = {}
+            model_info = {}
             
+            # 获取统计信息
+            stats = {}
             # 获取点赞数
             likes_button = soup.find("button", {"title": "See users who liked this repository"})
-            self.logger.info(f"likes_button ---->  {likes_button}")
             if likes_button:
                 likes_text = likes_button.get_text(strip=True)
                 self.logger.info(f"Found likes text: {likes_text}")
@@ -79,30 +88,36 @@ class HuggingFaceModelFetcher:
             
             # 获取关注者数
             followers_button = soup.find("button", {"title": "Show DeepSeek's followers"})
-            self.logger.info(f"followers_button ---->  {followers_button}")
             if followers_button:
                 followers_text = followers_button.get_text(strip=True)
                 self.logger.info(f"Found followers text: {followers_text}")
                 stats["followers"] = followers_text
             
-            self.logger.info(f"Final model stats: {stats}")
-            return stats
+            model_info["model_stats"] = stats
+            
+            # 只在需要时获取 Introduction 部分
+            if fetch_introduction:
+                model_info["introduction"] = self.fetch_model_introduction(soup)
+            else:
+                model_info["introduction"] = "Not fetched"
+            
+            # 添加日志输出以便调试
+            self.logger.info(f"Fetched info for {model_url} (introduction: {'fetched' if fetch_introduction else 'skipped'})")
+            
+            return model_info
         except Exception as e:
-            self.logger.error(f"Error fetching repo stats for {url}: {e}")
-            return {}
+            self.logger.error(f"Error fetching info for {model_url}: {e}")
+            return {"introduction": "Error fetching details", "model_stats": {}}
 
-    def fetch_model_details(self, model_url):
-        """获取模型详细信息"""
+    def fetch_model_introduction(self, soup):
+        """获取模型的Introduction部分
+        Args:
+            soup: BeautifulSoup对象，包含模型页面的HTML内容
+        Returns:
+            str: 模型的Introduction内容，如果未找到则返回"Not found..."
+        """
         try:
-            response = self.session.get(model_url, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            details = {}
-            
-            # 获取 Introduction 部分
             intro_section = soup.find("h2", class_="relative group flex items-center")
-            self.logger.info(f"Introduction section found: {intro_section}")
             
             if intro_section and "Introduction" in intro_section.get_text():
                 intro_content = []
@@ -115,30 +130,26 @@ class HuggingFaceModelFetcher:
                     current = current.find_next_sibling()
                 
                 if intro_content:
-                    details["introduction"] = "\n".join(intro_content)
-                    self.logger.info(f"Introduction content: {details['introduction']}")
+                    introduction = "\n".join(intro_content)
+                    self.logger.info(f"Introduction content: {introduction}")
+                    return introduction
                 else:
                     self.logger.info("No introduction content found in paragraphs")
-                    details["introduction"] = "Not found..."
+                    return "Not found..."
             else:
                 self.logger.info("Introduction section not found")
-                details["introduction"] = "Not found..."
-            
-            # 添加日志输出以便调试
-            self.logger.info(f"Fetched details for {model_url}:")
-            
-            return details
+                return "Not found..."
         except Exception as e:
-            self.logger.error(f"Error fetching details for {model_url}: {e}")
-            return {}
+            self.logger.error(f"Error fetching introduction: {e}")
+            return "Error fetching introduction"
 
-    def expand_models(self, models_div):
+    def expand_models(self, models_div, subscription_url):
         """
         Find expand button, click it to load more models, then process all model articles.
         """
         try:
             # 使用 Selenium 打开页面
-            self.driver.get(self.url)
+            self.driver.get(subscription_url)
             
             # 等待页面加载完成，使用更精确的选择器
             models_div = self.wait.until(
@@ -153,10 +164,6 @@ class HuggingFaceModelFetcher:
                 ))
             )
             
-            # 获取按钮文本
-            button_text = expand_button.text.replace('\n', ' ').strip()
-            self.logger.info(f"Found expand button with text: '{button_text}'")
-            
             # 点击按钮前等待一下
             sleep(2)
             
@@ -166,21 +173,12 @@ class HuggingFaceModelFetcher:
             # 等待更长时间让新内容加载
             sleep(5)
             
-            # 等待新内容加载
-            self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "article.group\\/repo")))
+            # 等待新内容加载，确保在 models_div 内
+            self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div#models article.group\\/repo")))
             
-            # 获取所有模型文章
-            model_articles = self.driver.find_elements(By.CSS_SELECTOR, "article.group\\/repo")
-            self.logger.info(f"Found {len(model_articles)} model articles")
-            
-            # 打印每个文章的标题，用于调试
-            for article in model_articles:
-                try:
-                    title_element = article.find_element(By.CSS_SELECTOR, "h4.text-md.truncate.font-mono")
-                    title = title_element.text.strip()
-                    self.logger.info(f"Article title: {title}")
-                except Exception as e:
-                    self.logger.error(f"Error getting article title: {str(e)}")
+            # 只在 models_div 内获取所有模型文章
+            model_articles = models_div.find_elements(By.CSS_SELECTOR, "article.group\\/repo")
+            self.logger.info(f"Found {len(model_articles)} model articles in models_div")
             
             return model_articles
                 
@@ -189,67 +187,123 @@ class HuggingFaceModelFetcher:
             self.logger.error(traceback.format_exc())
             return []
 
-    def fetch(self):
-        """获取模型列表"""
+    def load_existing_models(self):
+        """加载本地存储的模型数据"""
+        try:
+            if os.path.exists("data/models.json"):
+                with open("data/models.json", "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # 返回按订阅源组织的模型数据
+                    return data.get("subscriptions", {})
+            return {}
+        except Exception as e:
+            self.logger.error(f"Error loading existing models: {str(e)}")
+            return {}
+
+    def fetch(self, fetch_introduction=False):
+        """获取所有订阅源的模型列表
+        Args:
+            fetch_introduction: 是否获取Introduction部分，默认为False
+        """
         max_retries = 3
         retry_delay = 5  # seconds
         
         try:
-            for attempt in range(max_retries):
+            all_models = {}
+            
+            # 遍历所有订阅源
+            for subscription in self.config.get("subscriptions", []):
+                subscription_name = subscription.get("name")
+                subscription_url = subscription.get("url")
+                
+                if not subscription_name or not subscription_url:
+                    self.logger.error(f"Invalid subscription configuration: {subscription}")
+                    continue
+                
+                self.logger.info(f"Processing subscription: {subscription_name}")
+                
+                # 获取该订阅源的现有模型
+                existing_subscription_models = self.existing_models.get(subscription_name, {})
+                
                 try:
-                    self.logger.info(f"Fetching data from {self.url} (attempt {attempt + 1}/{max_retries})")
-                    response = requests.get(self.url, headers=self.headers)
-                    response.raise_for_status()
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # 首先找到 id 为 "models" 的 div
-                    models_div = soup.find("div", id="models")
-                    if not models_div:
-                        self.logger.error("Could not find div with id='models'")
-                        return {"models": []}
-                    
-                    # 处理所有模型
-                    model_articles = self.expand_models(models_div)
-                    models = []
-                    
-                    for article in model_articles:
+                    for attempt in range(max_retries):
                         try:
-                            # 获取标题和链接
-                            title_element = article.find_element(By.CSS_SELECTOR, "h4.text-md.truncate.font-mono")
-                            title = title_element.text.strip()
-                            link = article.find_element(By.CSS_SELECTOR, "a").get_attribute("href")
+                            response = requests.get(subscription_url, headers=self.headers)
+                            response.raise_for_status()
+                            soup = BeautifulSoup(response.text, 'html.parser')
                             
-                            self.logger.info(f"Processing model: {title}")
+                            # 首先找到 id 为 "models" 的 div
+                            models_div = soup.find("div", id="models")
+                            if not models_div:
+                                self.logger.error(f"Could not find div with id='models' for {subscription_name}")
+                                continue
                             
-                            # 获取模型详情
-                            model_details = self.fetch_model_details(link)
-                            model_details["title"] = title
-                            model_details["link"] = link
+                            # 处理所有模型
+                            model_articles = self.expand_models(models_div, subscription_url)
+                            subscription_models = []
+                            new_models = []
                             
-                            # 获取模型统计信息
-                            model_stats = self.fetch_model_stats(link)
-                            model_details["model_stats"] = model_stats
+                            for article in model_articles:
+                                try:
+                                    # 获取标题和链接
+                                    title_element = article.find_element(By.CSS_SELECTOR, "h4.text-md.truncate.font-mono")
+                                    title = title_element.text.strip()
+                                    link = article.find_element(By.CSS_SELECTOR, "a").get_attribute("href")
+                                    
+                                    # 检查是否是新增模型
+                                    if title not in existing_subscription_models:
+                                        self.logger.info(f"Found new model in {subscription_name}: {title}")
+                                        # 获取模型所有信息
+                                        model_info = self.fetch_model_info(link, fetch_introduction)
+                                        model_info["title"] = title
+                                        model_info["link"] = link
+                                        model_info["subscription"] = subscription_name
+                                        
+                                        # 添加较长的延迟以避免请求过快
+                                        sleep(3)  # 增加到3秒
+                                        
+                                        new_models.append(model_info)
+                                    else:
+                                        # 使用本地存储的模型数据
+                                        subscription_models.append(existing_subscription_models[title])
+                                    
+                                except Exception as e:
+                                    self.logger.error(f"Error processing model article in {subscription_name}: {str(e)}")
+                                    continue
                             
-                            models.append(model_details)
+                            # 合并新旧模型数据
+                            subscription_models.extend(new_models)
                             
-                            # 添加较长的延迟以避免请求过快
-                            sleep(3)  # 增加到3秒
+                            # 更新该订阅源的模型数据
+                            all_models[subscription_name] = {
+                                model["title"]: model for model in subscription_models
+                            }
+                            
+                            # 打印新增模型数量
+                            if new_models:
+                                self.logger.info(f"Found {len(new_models)} new models in {subscription_name}")
+                            else:
+                                self.logger.info(f"No new models found in {subscription_name}")
+                            
+                            break  # 成功获取数据，跳出重试循环
                             
                         except Exception as e:
-                            self.logger.error(f"Error processing model article: {str(e)}")
-                            continue
-                    
-                    self.logger.info(f"Fetched {len(models)} models.")
-                    return {"models": models}
-                    
+                            self.logger.error(f"Error fetching data for {subscription_name} (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                            if attempt < max_retries - 1:
+                                sleep(retry_delay)
+                            else:
+                                self.logger.error(f"Max retries reached for {subscription_name}. Giving up.")
+                
                 except Exception as e:
-                    self.logger.error(f"Error fetching data (attempt {attempt + 1}/{max_retries}): {str(e)}")
-                    if attempt < max_retries - 1:
-                        self.logger.info(f"Retrying in {retry_delay} seconds...")
-                        sleep(retry_delay)
-                    else:
-                        self.logger.error("Max retries reached. Giving up.")
-                        return {"models": []}
+                    self.logger.error(f"Error processing subscription {subscription_name}: {str(e)}")
+                    continue
+            
+            # 更新本地存储的模型数据
+            with open("data/models.json", "w", encoding="utf-8") as f:
+                json.dump({"subscriptions": all_models}, f, indent=2, ensure_ascii=False)
+            
+            return {"subscriptions": all_models}
+            
         finally:
             # 在所有操作完成后关闭浏览器
             try:
